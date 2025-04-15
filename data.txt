@@ -1,0 +1,86 @@
+Data Dictionary For RentEase
+
+By: Shaivan Suthar
+
+Technology: MERN
+
+Abstract:
+
+- Comprehensive System: Simplifies property rentals for residential, commercial, and vacation properties.  
+- Integrated Features: Includes property listings, rental agreements, payment processing, maintenance tracking, and tenant communication.  
+- User-Friendly Interface: Ensures seamless interaction for landlords and tenants.  
+- Technology-Driven: Enhances efficiency, transparency, and convenience in property management.  
+- End-to-End Solution: Addresses the needs of landlords, tenants, and property managers.  
+- Optimized Transactions: Facilitates smoother and more efficient rental processes.  
+- Smart Management: Ensures hassle-free and structured rental operations.
+
+
+====================================================================================
+| Table Name: users                                                                |
+====================================================================================
+| Column Name   | Data Type       | Constraints                                   |
+------------------------------------------------------------------------------------
+| id            | INT             | PRIMARY KEY, AUTO_INCREMENT                  |
+| username      | VARCHAR(255)    | NOT NULL, UNIQUE                             |
+| email         | VARCHAR(255)    | NOT NULL, UNIQUE                             |
+| password      | VARCHAR(255)    | NOT NULL                                     |
+| created_at    | TIMESTAMP       | DEFAULT CURRENT_TIMESTAMP                    |
+------------------------------------------------------------------------------------
+------------------------------------------------------------------------------------------------------------------------------------------
+====================================================================================
+| Table Name: properties                                                           |
+====================================================================================
+| Column Name   | Data Type       | Constraints                                   |
+------------------------------------------------------------------------------------
+| id            | INT             | PRIMARY KEY, AUTO_INCREMENT                  |
+| owner_id      | INT             | FOREIGN KEY REFERENCES users(id)             |
+| title         | VARCHAR(255)    | NOT NULL                                     |
+| description   | TEXT            | NOT NULL                                     |
+| price         | DECIMAL(10,2)   | NOT NULL                                     |
+| location      | VARCHAR(255)    | NOT NULL                                     |
+| status        | ENUM('available', 'rented') | DEFAULT 'available'             |
+| created_at    | TIMESTAMP       | DEFAULT CURRENT_TIMESTAMP                    |
+------------------------------------------------------------------------------------
+------------------------------------------------------------------------------------------------------------------------------------------
+====================================================================================
+| Table Name: bookings                                                             |
+====================================================================================
+| Column Name   | Data Type       | Constraints                                   |
+------------------------------------------------------------------------------------
+| id            | INT             | PRIMARY KEY, AUTO_INCREMENT                  |
+| user_id       | INT             | FOREIGN KEY REFERENCES users(id)             |
+| property_id   | INT             | FOREIGN KEY REFERENCES properties(id)        |
+| start_date    | DATE            | NOT NULL                                     |
+| end_date      | DATE            | NOT NULL                                     |
+| status        | ENUM('pending', 'confirmed', 'cancelled') | DEFAULT 'pending'  |
+| created_at    | TIMESTAMP       | DEFAULT CURRENT_TIMESTAMP                    |
+------------------------------------------------------------------------------------
+----------------------------------------------------------------------------------------------------------------------------------------
+====================================================================================
+| Table Name: payments                                                             |
+====================================================================================
+| Column Name   | Data Type       | Constraints                                   |
+------------------------------------------------------------------------------------
+| id            | INT             | PRIMARY KEY, AUTO_INCREMENT                  |
+| booking_id    | INT             | FOREIGN KEY REFERENCES bookings(id)          |
+| amount        | DECIMAL(10,2)   | NOT NULL                                     |
+| payment_date  | TIMESTAMP       | DEFAULT CURRENT_TIMESTAMP                    |
+| status        | ENUM('pending', 'completed', 'failed') | DEFAULT 'pending'     |
+------------------------------------------------------------------------------------
+------------------------------------------------------------------------------------------------------------------------------------------
+====================================================================================
+| Table Name: favorites                                                            |
+====================================================================================
+| Column Name   | Data Type       | Constraints                                   |
+------------------------------------------------------------------------------------
+| id            | INT             | PRIMARY KEY, AUTO_INCREMENT                  |
+| user_id       | INT             | FOREIGN KEY REFERENCES users(id)             |
+| property_id   | INT             | FOREIGN KEY REFERENCES properties(id)        |
+| created_at    | TIMESTAMP       | DEFAULT CURRENT_TIMESTAMP                    |
+------------------------------------------------------------------------------------
+
+
+
+
+
+
