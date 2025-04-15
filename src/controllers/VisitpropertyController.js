@@ -6,7 +6,7 @@ const MailUtil = require("../utils/MailUtil");
 // ✅ Schedule a Visit
 exports.scheduleVisit = async (req, res) => {
   try {
-    const { property, tenant, visitDate, visitTime, message } = req.body;
+    const { property, tenant, visitDate, visitTime, message, tenantName } = req.body;
 
     // Check if property exists
     const existingProperty = await Property.findById(property);
@@ -32,7 +32,7 @@ exports.scheduleVisit = async (req, res) => {
     // Send email confirmation
     const emailSubject = "Visit Scheduled Confirmation";
     const emailBody = `
-      Dear ${visitor.name},
+      Dear ${tenantName || visitor.username || 'Tenant'},
 
       Your visit to "${existingProperty.title}" at ${existingProperty.location} 
       is scheduled for ${visitDate} at ${visitTime}.
@@ -53,11 +53,18 @@ exports.scheduleVisit = async (req, res) => {
 exports.getAllVisits = async (req, res) => {
   try {
     const visits = await Visit.find()
-      .populate("property", "title location")
-      .populate("tenant", "name email");
+      .populate({
+        path: "property",
+        select: "title location propertyImages images imageUrls propertyImage"
+      })
+      .populate("tenant", "name email username");
+
+    // Debug log to see what data we're getting
+    console.log("Visit data with property:", JSON.stringify(visits[0]?.property, null, 2));
 
     res.status(200).json(visits);
   } catch (error) {
+    console.error("Error fetching visits:", error);
     res.status(500).json({ message: "Server error", error: error.message });
   }
 };
@@ -66,8 +73,8 @@ exports.getAllVisits = async (req, res) => {
 exports.getVisitById = async (req, res) => {
   try {
     const visit = await Visit.findById(req.params.id)
-      .populate("property", "title location")
-      .populate("tenant", "name email");
+      .populate("property", "title location propertyImages")
+      .populate("tenant", "name email username");
 
     if (!visit) return res.status(404).json({ message: "Visit not found" });
 
@@ -80,38 +87,40 @@ exports.getVisitById = async (req, res) => {
 // Reschedule a Visit
 exports.rescheduleVisit = async (req, res) => {
   try {
-    const { newVisitDate, newVisitTime } = req.body;
-    const visit = await Visit.findById(req.params.id).populate("tenant", "email name");
+    const { visitDate, visitTime, tenantName, message } = req.body;
+    const visit = await Visit.findById(req.params.id)
+      .populate("tenant", "email username")
+      .populate("property", "title location");
 
     if (!visit) return res.status(404).json({ message: "Visit not found" });
 
     // Ensure new date is valid (not in the past)
     const currentDate = new Date();
-    if (new Date(newVisitDate) < currentDate) {
+    const newVisitDate = new Date(visitDate);
+    if (newVisitDate < currentDate) {
       return res.status(400).json({ message: "New visit date must be in the future" });
     }
 
     // Store old visit date/time before rescheduling
     visit.previousVisitDate = visit.visitDate;
     visit.previousVisitTime = visit.visitTime;
-    visit.visitDate = newVisitDate;
-    visit.visitTime = newVisitTime;
+    visit.visitDate = visitDate;
+    visit.visitTime = visitTime;
     visit.status = "rescheduled";
+    if (message) {
+      visit.message = message;
+    }
 
     await visit.save();
-
-    // Ensure tenant email exists before sending email
-    if (!visit.tenant || !visit.tenant.email) {
-      return res.status(400).json({ message: "Tenant email not found, cannot send email" });
-    }
 
     // Send reschedule email
     const emailSubject = "Visit Rescheduled";
     const emailBody = `
-      Dear ${visit.tenant.name},
+      Dear ${tenantName || visit.tenant.username || 'Tenant'},
 
-      Your visit has been **rescheduled**.
-      **New Date & Time:** ${newVisitDate} at ${newVisitTime}
+      Your visit for property "${visit.property.title}" has been rescheduled.
+      New Date & Time: ${visitDate} at ${visitTime}
+      ${message ? `\nReason: ${message}` : ''}
 
       If you have any concerns, please contact the landlord.
 
@@ -119,7 +128,6 @@ exports.rescheduleVisit = async (req, res) => {
       RentEase Team
     `;
 
-    console.log(`📩 Sending email to: ${visit.tenant.email}`);
     await MailUtil.sendingMail(visit.tenant.email, emailSubject, emailBody);
 
     res.status(200).json({ message: "Visit rescheduled successfully, email sent!", visit });
@@ -133,10 +141,12 @@ exports.rescheduleVisit = async (req, res) => {
 // ✅ Cancel a Visit (Update status instead of deleting)
 exports.cancelVisit = async (req, res) => {
   try {
-    const { cancellationReason } = req.body;
+    const { cancellationReason, tenantName } = req.body;
 
     // Populate tenant details
-    const visit = await Visit.findById(req.params.id).populate("tenant", "email name");
+    const visit = await Visit.findById(req.params.id)
+      .populate("tenant", "email username")
+      .populate("property", "title location");
 
     if (!visit) return res.status(404).json({ message: "Visit not found" });
 
@@ -153,10 +163,10 @@ exports.cancelVisit = async (req, res) => {
     // Send cancellation email
     const emailSubject = "Visit Cancelled";
     const emailBody = `
-      Dear ${visit.tenant.name},
+      Dear ${tenantName || visit.tenant.username || 'Tenant'},
 
-      Your visit has been cancelled.
-      Reason: ${cancellationReason}
+      Your visit for property "${visit.property.title}" has been cancelled.
+      Reason: ${cancellationReason || 'No reason provided'}
 
       Regards,  
       RentEase Team
@@ -166,6 +176,7 @@ exports.cancelVisit = async (req, res) => {
 
     res.status(200).json({ message: "Visit cancelled successfully", visit });
   } catch (error) {
+    console.error("Error cancelling visit:", error);
     res.status(500).json({ message: "Server error", error: error.message });
   }
 };
@@ -216,6 +227,33 @@ exports.getVisitsByTenantId = async (req, res) => {
 
     res.status(200).json(visits);
   } catch (error) {
+    res.status(500).json({ message: "Server error", error: error.message });
+  }
+};
+
+// Delete visit permanently
+exports.deleteVisitPermanently = async (req, res) => {
+  try {
+    const visitId = req.params.id;
+    const visit = await Visit.findById(visitId);
+
+    if (!visit) {
+      return res.status(404).json({ message: "Visit not found" });
+    }
+
+    // Only allow deletion of cancelled visits
+    if (visit.status !== "cancelled") {
+      return res.status(400).json({ 
+        message: "Only cancelled visits can be removed from the list" 
+      });
+    }
+
+    await Visit.findByIdAndDelete(visitId);
+    res.status(200).json({ 
+      message: "Visit removed from list successfully" 
+    });
+  } catch (error) {
+    console.error("Error deleting visit:", error);
     res.status(500).json({ message: "Server error", error: error.message });
   }
 };

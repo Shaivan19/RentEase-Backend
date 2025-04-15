@@ -8,6 +8,7 @@ const { isTenant } = require("../middleware/authMiddleware");
 router.post("/visit/schedule", visitController.scheduleVisit);
 router.put("/visit/reschedule/:id", visitController.rescheduleVisit);
 router.delete("/visit/cancel/:id", visitController.cancelVisit);
+router.delete("/visit/remove/:id", visitController.deleteVisitPermanently);
 router.get("/allvisit", visitController.getAllVisits);
 router.get("/visit/:id", visitController.getVisitById);
 router.get("/visit/tenant/:tenantId",verifyToken,isTenant,visitController.getVisitsByTenantId);
