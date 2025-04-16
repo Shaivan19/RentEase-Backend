@@ -33,7 +33,7 @@ const visitSchema = new mongoose.Schema(
     }, // Store old time when rescheduled
     status: { 
       type: String, 
-      enum: ["scheduled", "rescheduled", "completed", "cancelled"], 
+      enum: ["scheduled", "rescheduled", "completed", "cancelled", "rejected", "confirmed"], 
       default: "scheduled" 
     },
     message: { 

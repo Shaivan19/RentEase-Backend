@@ -1,6 +1,7 @@
 const Visit = require("../models/VisitpropertyModel");
 const Property = require("../models/PropertyModel");
 const Tenant = require("../models/TenantModel");
+const Landlord = require("../models/LandlordModel");
 const MailUtil = require("../utils/MailUtil");
 
 // ✅ Schedule a Visit
@@ -9,7 +10,7 @@ exports.scheduleVisit = async (req, res) => {
     const { property, tenant, visitDate, visitTime, message, tenantName } = req.body;
 
     // Check if property exists
-    const existingProperty = await Property.findById(property);
+    const existingProperty = await Property.findById(property).populate('owner');
     if (!existingProperty) return res.status(404).json({ message: "Property not found" });
 
     // Check if tenant exists
@@ -19,7 +20,7 @@ exports.scheduleVisit = async (req, res) => {
     // Create a new visit request
     const newVisit = new Visit({
       tenant,
-      landlord: existingProperty.owner,
+      landlord: existingProperty.owner._id,
       property,
       visitDate,
       visitTime,
@@ -29,9 +30,9 @@ exports.scheduleVisit = async (req, res) => {
 
     await newVisit.save();
 
-    // Send email confirmation
-    const emailSubject = "Visit Scheduled Confirmation";
-    const emailBody = `
+    // Send email to tenant
+    const tenantEmailSubject = "Visit Scheduled Confirmation";
+    const tenantEmailBody = `
       Dear ${tenantName || visitor.username || 'Tenant'},
 
       Your visit to "${existingProperty.title}" at ${existingProperty.location} 
@@ -40,7 +41,23 @@ exports.scheduleVisit = async (req, res) => {
       Regards,  
       RentEase Team
     `;
-    await MailUtil.sendingMail(visitor.email, emailSubject, emailBody);
+    await MailUtil.sendingMail(visitor.email, tenantEmailSubject, tenantEmailBody);
+
+    // Send email to landlord
+    const landlordEmailSubject = "New Property Visit Request";
+    const landlordEmailBody = `
+      Dear ${existingProperty.owner.username || 'Landlord'},
+
+      A tenant named ${tenantName || visitor.username} has requested to visit your property 
+      "${existingProperty.title}" at ${existingProperty.location} 
+      on ${visitDate} at ${visitTime}.
+
+      Please review and confirm this visit request.
+
+      Regards,
+      RentEase Team
+    `;
+    await MailUtil.sendingMail(existingProperty.owner.email, landlordEmailSubject, landlordEmailBody);
 
     res.status(201).json({ message: "Visit scheduled successfully", visit: newVisit });
   } catch (error) {
@@ -72,7 +89,8 @@ exports.getAllVisits = async (req, res) => {
 // ✅ Get Visit by ID
 exports.getVisitById = async (req, res) => {
   try {
-    const visit = await Visit.findById(req.params.id)
+    const { visitId } = req.params;
+    const visit = await Visit.findById(visitId)
       .populate("property", "title location propertyImages")
       .populate("tenant", "name email username");
 
@@ -87,94 +105,85 @@ exports.getVisitById = async (req, res) => {
 // Reschedule a Visit
 exports.rescheduleVisit = async (req, res) => {
   try {
-    const { visitDate, visitTime, tenantName, message } = req.body;
-    const visit = await Visit.findById(req.params.id)
-      .populate("tenant", "email username")
-      .populate("property", "title location");
+    const { visitId } = req.params;
+    const { visitDate, visitTime, message } = req.body;
 
-    if (!visit) return res.status(404).json({ message: "Visit not found" });
+    const visit = await Visit.findById(visitId)
+      .populate('tenant', 'username email')
+      .populate('property', 'title location')
+      .populate('landlord', 'username email');
 
-    // Ensure new date is valid (not in the past)
-    const currentDate = new Date();
-    const newVisitDate = new Date(visitDate);
-    if (newVisitDate < currentDate) {
-      return res.status(400).json({ message: "New visit date must be in the future" });
+    if (!visit) {
+      return res.status(404).json({ message: "Visit not found" });
     }
 
-    // Store old visit date/time before rescheduling
+    // Store previous date and time
     visit.previousVisitDate = visit.visitDate;
     visit.previousVisitTime = visit.visitTime;
     visit.visitDate = visitDate;
     visit.visitTime = visitTime;
     visit.status = "rescheduled";
-    if (message) {
-      visit.message = message;
-    }
+    if (message) visit.message = message;
 
     await visit.save();
 
-    // Send reschedule email
-    const emailSubject = "Visit Rescheduled";
-    const emailBody = `
-      Dear ${tenantName || visit.tenant.username || 'Tenant'},
+    // Send email to landlord about rescheduling
+    const landlordEmailSubject = "Visit Rescheduled";
+    const landlordEmailBody = `
+      Dear ${visit.landlord.username || 'Landlord'},
 
-      Your visit for property "${visit.property.title}" has been rescheduled.
-      New Date & Time: ${visitDate} at ${visitTime}
-      ${message ? `\nReason: ${message}` : ''}
+      The visit to your property "${visit.property.title}" by ${visit.tenant.username} 
+      has been rescheduled to ${visitDate} at ${visitTime}.
 
-      If you have any concerns, please contact the landlord.
+      Previous schedule was ${visit.previousVisitDate} at ${visit.previousVisitTime}.
 
-      Regards,  
+      Regards,
       RentEase Team
     `;
+    await MailUtil.sendingMail(visit.landlord.email, landlordEmailSubject, landlordEmailBody);
 
-    await MailUtil.sendingMail(visit.tenant.email, emailSubject, emailBody);
-
-    res.status(200).json({ message: "Visit rescheduled successfully, email sent!", visit });
+    res.json({ message: "Visit rescheduled successfully", visit });
   } catch (error) {
-    console.error("🔥 Error rescheduling visit:", error);
+    console.error("Error rescheduling visit:", error);
     res.status(500).json({ message: "Server error", error: error.message });
   }
 };
 
-
-// ✅ Cancel a Visit (Update status instead of deleting)
+// ✅ Cancel a Visit
 exports.cancelVisit = async (req, res) => {
   try {
-    const { cancellationReason, tenantName } = req.body;
+    const { visitId } = req.params;
+    const { cancellationReason } = req.body;
 
-    // Populate tenant details
-    const visit = await Visit.findById(req.params.id)
-      .populate("tenant", "email username")
-      .populate("property", "title location");
+    const visit = await Visit.findById(visitId)
+      .populate('tenant', 'username email')
+      .populate('property', 'title location')
+      .populate('landlord', 'username email');
 
-    if (!visit) return res.status(404).json({ message: "Visit not found" });
-
-    // Check if the tenant has an email
-    if (!visit.tenant || !visit.tenant.email) {
-      return res.status(400).json({ message: "Tenant email not found" });
+    if (!visit) {
+      return res.status(404).json({ message: "Visit not found" });
     }
 
-    // Update visit status
     visit.status = "cancelled";
     visit.cancellationReason = cancellationReason;
     await visit.save();
 
-    // Send cancellation email
-    const emailSubject = "Visit Cancelled";
-    const emailBody = `
-      Dear ${tenantName || visit.tenant.username || 'Tenant'},
+    // Send email to landlord about cancellation
+    const landlordEmailSubject = "Visit Cancelled";
+    const landlordEmailBody = `
+      Dear ${visit.landlord.username || 'Landlord'},
 
-      Your visit for property "${visit.property.title}" has been cancelled.
-      Reason: ${cancellationReason || 'No reason provided'}
+      The visit to your property "${visit.property.title}" by ${visit.tenant.username} 
+      has been cancelled.
 
-      Regards,  
+      Reason for cancellation: ${cancellationReason || 'Not specified'}
+
+      Regards,
       RentEase Team
     `;
+    await MailUtil.sendingMail(visit.landlord.email, landlordEmailSubject, landlordEmailBody);
 
-    await MailUtil.sendingMail(visit.tenant.email, emailSubject, emailBody);
-
-    res.status(200).json({ message: "Visit cancelled successfully", visit });
+    res.json({ message: "Visit cancelled successfully", visit });
   } catch (error) {
     console.error("Error cancelling visit:", error);
     res.status(500).json({ message: "Server error", error: error.message });
@@ -234,17 +243,17 @@ exports.getVisitsByTenantId = async (req, res) => {
 // Delete visit permanently
 exports.deleteVisitPermanently = async (req, res) => {
   try {
-    const visitId = req.params.id;
+    const { visitId } = req.params;
     const visit = await Visit.findById(visitId);
 
     if (!visit) {
       return res.status(404).json({ message: "Visit not found" });
     }
 
-    // Only allow deletion of cancelled visits
-    if (visit.status !== "cancelled") {
+    // Allow deletion of both cancelled and rejected visits
+    if (visit.status !== "cancelled" && visit.status !== "rejected") {
       return res.status(400).json({ 
-        message: "Only cancelled visits can be removed from the list" 
+        message: "Only cancelled or rejected visits can be removed from the list" 
       });
     }
 
@@ -255,6 +264,108 @@ exports.deleteVisitPermanently = async (req, res) => {
   } catch (error) {
     console.error("Error deleting visit:", error);
     res.status(500).json({ message: "Server error", error: error.message });
+  }
+};
+
+// ✅ Confirm a Visit
+exports.confirmVisit = async (req, res) => {
+  try {
+    const { visitId } = req.params;
+
+    const visit = await Visit.findById(visitId)
+      .populate('tenant', 'username email')
+      .populate('property', 'title location')
+      .populate('landlord', 'username email');
+
+    if (!visit) {
+      return res.status(404).json({ message: "Visit not found" });
+    }
+
+    visit.status = "confirmed";
+    await visit.save();
+
+    // Send email to tenant about confirmation
+    const tenantEmailSubject = "Visit Confirmed";
+    const tenantEmailBody = `
+      Dear ${visit.tenant.username || 'Tenant'},
+
+      Your visit request for "${visit.property.title}" has been confirmed by the landlord.
+      
+      Visit Details:
+      - Date: ${visit.visitDate}
+      - Time: ${visit.visitTime}
+      - Location: ${visit.property.location}
+
+      Please arrive on time for your visit.
+
+      Regards,
+      RentEase Team
+    `;
+    await MailUtil.sendingMail(visit.tenant.email, tenantEmailSubject, tenantEmailBody);
+
+    res.json({ 
+      success: true,
+      message: "Visit confirmed successfully", 
+      visit 
+    });
+  } catch (error) {
+    console.error("Error confirming visit:", error);
+    res.status(500).json({ 
+      success: false,
+      message: "Server error", 
+      error: error.message 
+    });
+  }
+};
+
+// ✅ Reject a Visit
+exports.rejectVisit = async (req, res) => {
+  try {
+    const { visitId } = req.params;
+
+    const visit = await Visit.findById(visitId)
+      .populate('tenant', 'username email')
+      .populate('property', 'title location')
+      .populate('landlord', 'username email');
+
+    if (!visit) {
+      return res.status(404).json({ message: "Visit not found" });
+    }
+
+    visit.status = "rejected";
+    await visit.save();
+
+    // Send email to tenant about rejection
+    const tenantEmailSubject = "Visit Request Rejected";
+    const tenantEmailBody = `
+      Dear ${visit.tenant.username || 'Tenant'},
+
+      We regret to inform you that your visit request for "${visit.property.title}" has been rejected by the landlord.
+
+      Visit Details:
+      - Date: ${visit.visitDate}
+      - Time: ${visit.visitTime}
+      - Location: ${visit.property.location}
+
+      You can try to schedule another visit at a different time.
+
+      Regards,
+      RentEase Team
+    `;
+    await MailUtil.sendingMail(visit.tenant.email, tenantEmailSubject, tenantEmailBody);
+
+    res.json({ 
+      success: true,
+      message: "Visit rejected successfully", 
+      visit 
+    });
+  } catch (error) {
+    console.error("Error rejecting visit:", error);
+    res.status(500).json({ 
+      success: false,
+      message: "Server error", 
+      error: error.message 
+    });
   }
 };
 
