@@ -5,7 +5,7 @@
 // // console.log(user.userAge)
 
 // // user.printUserData(100)
-
+require("dotenv").config();
 const express = require("express");
 const mongoose = require("mongoose");
 const cors= require("cors");
@@ -24,6 +24,8 @@ const visitpropertyRoutes = require("./src/routes/VisitpropertyRoutes");
 const imageRoutes = require("./src/routes/ImageRoutes");
 const bookpropertyRoutes = require("./src/routes/BookpropertyRoutes");
 
+const adminRoutes = require("./src/routes/AdminRoutes");
+
 
 app.use("/api", roleRoutes); //  Add API prefix
 app.use(userRoutes);
@@ -31,6 +33,8 @@ app.use( propertyRoutes);
 app.use(visitpropertyRoutes);
 app.use(imageRoutes);
 app.use(bookpropertyRoutes);
+
+app.use("/admin", adminRoutes);
 
 // MongoDB Connection
 mongoose.connect("mongodb://127.0.0.1:27017/SAMPLE_PROJECT")

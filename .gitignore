@@ -144,3 +144,6 @@ utils/
 
 components/
 .gitattributes
+
+src/controllers/AdminController.js
+# src/controllers/UserController.js

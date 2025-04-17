@@ -58,7 +58,7 @@ const login = async (req, res) => {
         userType,
         email: foundUser.email
       },
-      process.env.JWT_SECRET || 'your-secret-key',
+      process.env.JWT_SECRET || 'TUTU',
       { expiresIn: '24h' }
     );
 
