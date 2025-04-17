@@ -1,6 +1,6 @@
 const mongoose = require('mongoose');
 
-const leaseSchema = new mongoose.Schema({
+const LeaseSchema = new mongoose.Schema({
     propertyId: {
         type: mongoose.Schema.Types.ObjectId,
         ref: 'Property',
@@ -8,12 +8,12 @@ const leaseSchema = new mongoose.Schema({
     },
     landlordId: {
         type: mongoose.Schema.Types.ObjectId,
-        ref: 'User',
+        ref: 'Landlord',
         required: true
     },
     tenantId: {
         type: mongoose.Schema.Types.ObjectId,
-        ref: 'User',
+        ref: 'Tenant',
         required: true
     },
     startDate: {
@@ -24,7 +24,7 @@ const leaseSchema = new mongoose.Schema({
         type: Date,
         required: true
     },
-    monthlyRent: {
+    rentAmount: {
         type: Number,
         required: true
     },
@@ -32,27 +32,77 @@ const leaseSchema = new mongoose.Schema({
         type: Number,
         required: true
     },
-    leaseStatus: {
+    status: {
         type: String,
-        enum: ['active', 'expired', 'terminated'],
-        default: 'active'
+        enum: ['pending', 'active', 'expired', 'terminated', 'renewed'],
+        default: 'pending'
     },
-    paymentDueDay: {
+    terms: {
+        rentAmount: {
+            type: Number,
+            required: true
+        },
+        securityDeposit: {
+            type: Number,
+            required: true
+        },
+        duration: {
+            type: String,
+            required: true
+        },
+        rentDueDate: {
+            type: Number,
+            required: true
+        },
+        maintenance: {
+            type: String,
+            default: 'Tenant responsible'
+        },
+        utilities: {
+            type: String,
+            default: 'Tenant responsible'
+        },
+        noticePeriod: {
+            type: String,
+            default: '1 month'
+        },
+        renewalTerms: {
+            type: String,
+            default: 'Automatic renewal unless notice given'
+        },
+        terminationClause: {
+            type: String,
+            default: 'Standard termination terms apply'
+        }
+    },
+    landlordSignature: {
+        type: String,
+        default: null
+    },
+    tenantSignature: {
+        type: String,
+        default: null
+    },
+    signedDate: {
+        type: Date,
+        default: null
+    },
+    automaticPayments: {
+        type: Boolean,
+        default: false
+    },
+    paymentDay: {
         type: Number,
-        required: true,
         min: 1,
         max: 31
     },
-    utilities: [{
-        name: String,
-        responsibleParty: {
-            type: String,
-            enum: ['landlord', 'tenant']
-        }
-    }],
-    terms: {
-        type: String,
-        required: true
+    utilitiesIncluded: {
+        type: Boolean,
+        default: false
+    },
+    utilitiesAmount: {
+        type: Number,
+        default: 0
     },
     createdAt: {
         type: Date,
@@ -65,11 +115,9 @@ const leaseSchema = new mongoose.Schema({
 });
 
 // Add pre-save middleware to update the updatedAt field
-leaseSchema.pre('save', function(next) {
+LeaseSchema.pre('save', function(next) {
     this.updatedAt = Date.now();
     next();
 });
 
-const Lease = mongoose.model('Lease', leaseSchema);
-
-module.exports = Lease;
+module.exports = mongoose.model("Lease", LeaseSchema);

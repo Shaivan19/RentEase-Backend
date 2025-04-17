@@ -1,25 +1,24 @@
 const mongoose = require('mongoose');
 
-const maintenanceSchema = new mongoose.Schema({
-    property: {
+const MaintenanceSchema = new mongoose.Schema({
+    propertyId: {
         type: mongoose.Schema.Types.ObjectId,
         ref: 'Property',
         required: true
     },
-    tenant: {
+    tenantId: {
         type: mongoose.Schema.Types.ObjectId,
         ref: 'Tenant',
         required: true
     },
-    landlord: {
+    landlordId: {
         type: mongoose.Schema.Types.ObjectId,
         ref: 'Landlord',
         required: true
     },
     title: {
         type: String,
-        required: true,
-        trim: true
+        required: true
     },
     description: {
         type: String,
@@ -27,17 +26,22 @@ const maintenanceSchema = new mongoose.Schema({
     },
     priority: {
         type: String,
-        enum: ['LOW', 'MEDIUM', 'HIGH', 'URGENT'],
-        default: 'MEDIUM'
+        enum: ['low', 'medium', 'high', 'emergency'],
+        default: 'medium'
     },
     status: {
         type: String,
-        enum: ['PENDING', 'IN_PROGRESS', 'COMPLETED', 'CANCELLED'],
-        default: 'PENDING'
+        enum: ['pending', 'assigned', 'in_progress', 'completed', 'cancelled'],
+        default: 'pending'
     },
     images: [{
-        type: String // URLs of uploaded images
+        url: String,
+        description: String
     }],
+    assignedTo: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'ServiceProvider'
+    },
     estimatedCost: {
         type: Number,
         default: 0
@@ -46,36 +50,41 @@ const maintenanceSchema = new mongoose.Schema({
         type: Number,
         default: 0
     },
-    assignedTo: {
-        type: String, // Name or ID of maintenance person/company
-        default: null
-    },
-    scheduledDate: {
-        type: Date,
-        default: null
-    },
-    completionDate: {
-        type: Date,
-        default: null
-    },
+    completionDate: Date,
     comments: [{
-        user: {
+        userId: {
             type: mongoose.Schema.Types.ObjectId,
             refPath: 'comments.userType'
         },
         userType: {
             type: String,
-            enum: ['Tenant', 'Landlord']
+            enum: ['Tenant', 'Landlord', 'ServiceProvider']
         },
-        text: String,
+        comment: String,
         timestamp: {
             type: Date,
             default: Date.now
         }
-    }]
-}, {
-    timestamps: true
+    }],
+    createdAt: {
+        type: Date,
+        default: Date.now
+    },
+    updatedAt: {
+        type: Date,
+        default: Date.now
+    }
 });
 
-const Maintenance = mongoose.model('Maintenance', maintenanceSchema);
+MaintenanceSchema.pre('save', function(next) {
+    this.updatedAt = Date.now();
+    next();
+});
+
+// Add index for better query performance
+MaintenanceSchema.index({ propertyId: 1, status: 1 });
+MaintenanceSchema.index({ tenantId: 1, status: 1 });
+MaintenanceSchema.index({ landlordId: 1, status: 1 });
+
+const Maintenance = mongoose.model('Maintenance', MaintenanceSchema);
 module.exports = Maintenance;

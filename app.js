@@ -24,6 +24,13 @@ const visitpropertyRoutes = require("./src/routes/VisitpropertyRoutes");
 const imageRoutes = require("./src/routes/ImageRoutes");
 const bookpropertyRoutes = require("./src/routes/BookpropertyRoutes");
 
+const applicationRoutes = require("./src/routes/ApplicationRoutes");
+const leaseRoutes = require("./src/routes/LeaseRoutes");
+const maintenanceRoutes = require("./src/routes/MaintenanceRoutes");
+const paymentRoutes = require("./src/routes/PaymentRoutes");
+const notificationRoutes = require("./src/routes/NotificationRoutes");
+const reviewRoutes = require("./src/routes/ReviewRoutes");
+
 const adminRoutes = require("./src/routes/AdminRoutes");
 
 
@@ -33,6 +40,13 @@ app.use( propertyRoutes);
 app.use(visitpropertyRoutes);
 app.use(imageRoutes);
 app.use(bookpropertyRoutes);
+app.use(applicationRoutes);
+app.use(leaseRoutes);
+app.use(maintenanceRoutes);
+app.use(paymentRoutes);
+app.use(notificationRoutes);
+app.use(reviewRoutes);
+
 
 app.use("/admin", adminRoutes);
 

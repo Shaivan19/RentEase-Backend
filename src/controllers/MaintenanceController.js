@@ -4,6 +4,8 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs').promises;
 const nodemailer = require('nodemailer');
+const Notification = require('../models/NotificationModel');
+const { verifyToken } = require('../middleware/authMiddleware');
 
 // Configure multer for file upload
 const storage = multer.diskStorage({
@@ -264,6 +266,143 @@ const MaintenanceController = {
                 message: 'Error fetching maintenance request details',
                 error: error.message
             });
+        }
+    },
+
+    // Upload maintenance request images
+    uploadMaintenanceImages: async (req, res) => {
+        try {
+            const { maintenanceId } = req.params;
+            const maintenance = await Maintenance.findById(maintenanceId);
+            
+            if (!maintenance) {
+                return res.status(404).json({ message: 'Maintenance request not found' });
+            }
+
+            const images = req.files.map(file => ({
+                url: file.path,
+                description: file.originalname
+            }));
+
+            maintenance.images = [...maintenance.images, ...images];
+            await maintenance.save();
+
+            // Create notification for landlord
+            const notification = new Notification({
+                userId: maintenance.landlordId,
+                userType: 'Landlord',
+                type: 'maintenance',
+                title: 'Maintenance Images Uploaded',
+                message: 'New images have been uploaded for a maintenance request',
+                relatedId: maintenance._id
+            });
+            await notification.save();
+
+            res.json(maintenance);
+        } catch (error) {
+            res.status(400).json({ message: error.message });
+        }
+    },
+
+    // Get maintenance request images
+    getMaintenanceImages: async (req, res) => {
+        try {
+            const maintenance = await Maintenance.findById(req.params.requestId);
+            
+            if (!maintenance) {
+                return res.status(404).json({ message: 'Maintenance request not found' });
+            }
+            
+            res.json(maintenance.images);
+        } catch (error) {
+            res.status(500).json({ message: error.message });
+        }
+    },
+
+    // Set maintenance priority
+    setMaintenancePriority: async (req, res) => {
+        try {
+            const { priority } = req.body;
+            const maintenance = await Maintenance.findById(req.params.requestId);
+            
+            if (!maintenance) {
+                return res.status(404).json({ message: 'Maintenance request not found' });
+            }
+
+            maintenance.priority = priority;
+            await maintenance.save();
+
+            // Create notification for tenant
+            const notification = new Notification({
+                userId: maintenance.tenantId,
+                userType: 'Tenant',
+                type: 'maintenance',
+                title: 'Maintenance Priority Updated',
+                message: `The priority of your maintenance request has been set to ${priority}`,
+                relatedId: maintenance._id
+            });
+            await notification.save();
+
+            res.json(maintenance);
+        } catch (error) {
+            res.status(400).json({ message: error.message });
+        }
+    },
+
+    // Get maintenance status
+    getMaintenanceStatus: async (req, res) => {
+        try {
+            const maintenance = await Maintenance.findById(req.params.requestId);
+            
+            if (!maintenance) {
+                return res.status(404).json({ message: 'Maintenance request not found' });
+            }
+            
+            res.json({ status: maintenance.status });
+        } catch (error) {
+            res.status(500).json({ message: error.message });
+        }
+    },
+
+    // Assign maintenance to service provider
+    assignMaintenance: async (req, res) => {
+        try {
+            const { serviceProviderId } = req.body;
+            const maintenance = await Maintenance.findById(req.params.requestId);
+            
+            if (!maintenance) {
+                return res.status(404).json({ message: 'Maintenance request not found' });
+            }
+
+            maintenance.assignedTo = serviceProviderId;
+            maintenance.status = 'assigned';
+            await maintenance.save();
+
+            // Create notifications
+            const notifications = [
+                new Notification({
+                    userId: maintenance.tenantId,
+                    userType: 'Tenant',
+                    type: 'maintenance',
+                    title: 'Maintenance Assigned',
+                    message: 'A service provider has been assigned to your maintenance request',
+                    relatedId: maintenance._id
+                }),
+                new Notification({
+                    userId: serviceProviderId,
+                    userType: 'ServiceProvider',
+                    type: 'maintenance',
+                    title: 'New Maintenance Assignment',
+                    message: 'You have been assigned to a new maintenance request',
+                    relatedId: maintenance._id
+                })
+            ];
+
+            await Notification.insertMany(notifications);
+
+            res.json(maintenance);
+        } catch (error) {
+            res.status(400).json({ message: error.message });
         }
     }
 };

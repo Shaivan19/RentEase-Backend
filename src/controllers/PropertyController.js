@@ -428,9 +428,7 @@ const updateProperty = async (req, res) => {
   }
 };
 
-
-//saved properties operations
-
+// Save a property
 const saveProperty = async (req, res) => {
   try {
     const propertyId = req.params.propertyId;
@@ -538,6 +536,56 @@ const getSavedProperties = async (req, res) => {
   }
 };
 
+// Update property status (for landlords)
+const updatePropertyStatus = async (req, res) => {
+    try {
+        const { propertyId } = req.params;
+        const { status } = req.body;
+        const userId = req.user.id;
+
+        // Find the property
+        const property = await Property.findById(propertyId);
+        if (!property) {
+            return res.status(404).json({
+                success: false,
+                message: 'Property not found'
+            });
+        }
+
+        // Check if the user is the owner of the property
+        if (property.owner.toString() !== userId.toString()) {
+            return res.status(403).json({
+                success: false,
+                message: 'Only the property owner can update the status'
+            });
+        }
+
+        // Validate the new status
+        if (!['Available', 'Occupied', 'Maintenance', 'Reserved'].includes(status)) {
+            return res.status(400).json({
+                success: false,
+                message: 'Invalid status. Must be one of: Available, Occupied, Maintenance, Reserved'
+            });
+        }
+
+        // Update the property status
+        property.status = status;
+        await property.save();
+
+        res.status(200).json({
+            success: true,
+            message: 'Property status updated successfully',
+            property
+        });
+    } catch (error) {
+        console.error('Error updating property status:', error);
+        res.status(500).json({
+            success: false,
+            message: error.message || 'Error updating property status'
+        });
+    }
+};
+
 module.exports = { 
   createProperty, 
   getAllProperties, 
@@ -548,5 +596,7 @@ module.exports = {
   updateProperty,
   saveProperty,
   unsaveProperty,
-  getSavedProperties
-};
+  getSavedProperties,
+  updatePropertyStatus
+}
+

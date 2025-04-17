@@ -2,6 +2,11 @@ const Payment = require('../models/PaymentModel');
 const Razorpay = require('razorpay');
 const crypto = require('crypto');
 const mailutil = require("../utils/MailUtil"); // Using your existing mail utility
+const Lease = require("../models/LeaseModel");
+const Notification = require("../models/NotificationModel");
+const { verifyToken } = require("../middleware/authMiddleware");
+const BookProperty = require('../models/BookProperty');
+const Property = require('../models/PropertyModel');
 require('dotenv').config();
 
 // Initialize Razorpay
@@ -14,40 +19,91 @@ const PaymentController = {
     // Create a new payment order
     createPaymentOrder: async (req, res) => {
         try {
-            const { amount, paymentType, tenantId, landlordId, propertyId, description } = req.body;
+            const { amount, paymentType, tenantId, landlordId, propertyId, description, leaseId, leaseTerms } = req.body;
+
+            if (!amount || !paymentType || !tenantId || !landlordId || !propertyId || !leaseId || !leaseTerms) {
+                return res.status(400).json({
+                    success: false,
+                    message: "Missing required fields"
+                });
+            }
+
+            // For testing purposes, ensure amount is reasonable
+            const testAmount = Math.min(amount, 10000); // Max 100 INR for testing
 
             const options = {
-                amount: amount * 100, // Razorpay expects amount in paise
+                amount: testAmount, // Using test amount
                 currency: "INR",
-                receipt: `receipt_${Date.now()}`
+                receipt: `receipt_${Date.now()}`,
+                notes: {
+                    paymentType,
+                    tenantId,
+                    landlordId,
+                    propertyId,
+                    description,
+                    leaseId
+                }
             };
 
+            console.log('Creating Razorpay order with options:', options);
+
             const order = await razorpay.orders.create(options);
+
+            // Create a new lease document first
+            const lease = new Lease({
+                tenantId,
+                landlordId,
+                propertyId,
+                startDate: new Date(leaseTerms.startDate),
+                endDate: new Date(leaseTerms.endDate),
+                rentAmount: leaseTerms.rentAmount || testAmount / 100,
+                securityDeposit: leaseTerms.securityDeposit || testAmount / 100,
+                status: 'pending',
+                terms: {
+                    rentAmount: leaseTerms.rentAmount || testAmount / 100,
+                    securityDeposit: leaseTerms.securityDeposit || testAmount / 100,
+                    duration: leaseTerms.duration || '12 months',
+                    rentDueDate: leaseTerms.rentDueDate || 1,
+                    maintenance: leaseTerms.maintenance || 'Tenant responsible',
+                    utilities: leaseTerms.utilities || 'Tenant responsible',
+                    noticePeriod: leaseTerms.noticePeriod || '1 month',
+                    renewalTerms: leaseTerms.renewalTerms || 'Automatic renewal unless notice given',
+                    terminationClause: leaseTerms.terminationClause || 'Standard termination terms apply'
+                }
+            });
+
+            await lease.save();
 
             const payment = new Payment({
                 tenant: tenantId,
                 landlord: landlordId,
                 property: propertyId,
-                amount,
-                paymentType,
+                lease: lease._id,
+                amount: testAmount / 100,
+                paymentType: 'rent',
+                paymentMethod: 'razorpay',
+                paymentDate: new Date(),
                 razorpayOrderId: order.id,
                 description,
-                dueDate: new Date(Date.now() + 24 * 60 * 60 * 1000) // 24 hours from now
+                dueDate: new Date(Date.now() + 24 * 60 * 60 * 1000)
             });
 
             await payment.save();
 
             // Send payment initiation email to tenant
-            const tenant = await payment.populate('tenant property');
-            await mailutil.sendingMail(
-                tenant.tenant.email,
-                "Payment Initiated - RentEase",
-                `Dear ${tenant.tenant.username},
+            const populatedPayment = await Payment.findById(payment._id)
+                .populate('tenant')
+                .populate('property');
 
-Your payment of ₹${amount} has been initiated for ${payment.property.name}.
+            await mailutil.sendingMail(
+                populatedPayment.tenant.email,
+                "Payment Initiated - RentEase",
+                `Dear ${populatedPayment.tenant.username},
+
+Your payment of ₹${testAmount / 100} has been initiated for ${populatedPayment.property.name}.
 Payment Details:
 - Order ID: ${order.id}
-- Amount: ₹${amount}
+- Amount: ₹${testAmount / 100}
 - Type: ${paymentType}
 - Due Date: ${payment.dueDate}
 
@@ -63,6 +119,7 @@ RentEase Team`
                 payment
             });
         } catch (error) {
+            console.error('Error in createPaymentOrder:', error);
             res.status(500).json({
                 success: false,
                 message: "Error creating payment order",
@@ -74,99 +131,75 @@ RentEase Team`
     // Verify payment
     verifyPayment: async (req, res) => {
         try {
-            const { razorpay_order_id, razorpay_payment_id, razorpay_signature } = req.body;
+            const { razorpay_order_id, razorpay_payment_id, razorpay_signature, leaseId } = req.body;
 
-            const sign = razorpay_order_id + "|" + razorpay_payment_id;
-            const expectedSign = crypto
-                .createHmac("sha256", process.env.RAZORPAY_KEY_SECRET)
-                .update(sign.toString())
-                .digest("hex");
+            const body = razorpay_order_id + "|" + razorpay_payment_id;
+            const expectedSignature = crypto
+                .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
+                .update(body.toString())
+                .digest('hex');
 
-            if (razorpay_signature === expectedSign) {
+            if (expectedSignature === razorpay_signature) {
+                // Update payment status
                 const payment = await Payment.findOneAndUpdate(
                     { razorpayOrderId: razorpay_order_id },
-                    { 
-                        paymentStatus: 'COMPLETED',
-                        razorpayPaymentId: razorpay_payment_id
+                    {
+                        status: 'completed',
+                        razorpayPaymentId: razorpay_payment_id,
+                        razorpaySignature: razorpay_signature,
+                        paymentDate: new Date()
                     },
                     { new: true }
-                ).populate('tenant landlord property');
+                );
 
-                // Send success email to both tenant and landlord
-                await Promise.all([
-                    // Email to tenant
-                    mailutil.sendingMail(
-                        payment.tenant.email,
-                        "Payment Successful - RentEase",
-                        `Dear ${payment.tenant.username},
+                if (!payment) {
+                    return res.status(404).json({
+                        success: false,
+                        message: 'Payment not found'
+                    });
+                }
 
-Your payment of ₹${payment.amount} has been successfully processed.
+                // Update lease status
+                const lease = await Lease.findByIdAndUpdate(
+                    leaseId,
+                    { status: 'active' },
+                    { new: true }
+                );
 
-Payment Details:
-- Payment ID: ${payment.razorpayPaymentId}
-- Property: ${payment.property.name}
-- Payment Type: ${payment.paymentType}
-- Date: ${payment.paymentDate}
+                // Update property status
+                await Property.findByIdAndUpdate(
+                    payment.propertyId,
+                    { status: 'Occupied' }
+                );
 
-Thank you for using RentEase!
+                // Create booking
+                const booking = new BookProperty({
+                    tenant: payment.tenantId,
+                    landlord: payment.landlordId,
+                    property: payment.propertyId,
+                    status: 'booked',
+                    bookingDate: new Date()
+                });
 
-Best regards,
-RentEase Team`
-                    ),
-                    // Email to landlord
-                    mailutil.sendingMail(
-                        payment.landlord.email,
-                        "Payment Received - RentEase",
-                        `Dear ${payment.landlord.username},
-
-A payment of ₹${payment.amount} has been received from ${payment.tenant.username}.
-
-Payment Details:
-- Payment ID: ${payment.razorpayPaymentId}
-- Property: ${payment.property.name}
-- Payment Type: ${payment.paymentType}
-- Date: ${payment.paymentDate}
-
-The amount will be credited to your account within 24-48 hours.
-
-Best regards,
-RentEase Team`
-                    )
-                ]);
+                await booking.save();
 
                 res.json({
                     success: true,
-                    message: "Payment verified successfully",
-                    payment
+                    message: 'Payment verified successfully',
+                    payment,
+                    booking
                 });
             } else {
-                // Send payment failure email
-                const payment = await Payment.findOne({ razorpayOrderId: razorpay_order_id })
-                    .populate('tenant landlord property');
-                
-                await mailutil.sendingMail(
-                    payment.tenant.email,
-                    "Payment Failed - RentEase",
-                    `Dear ${payment.tenant.username},
-
-Your payment of ₹${payment.amount} for ${payment.property.name} has failed due to signature verification issues.
-
-Please try again or contact support if the issue persists.
-
-Best regards,
-RentEase Team`
-                );
-
                 res.status(400).json({
                     success: false,
-                    message: "Invalid signature"
+                    message: 'Invalid signature'
                 });
             }
         } catch (error) {
+            console.error('Error in verifyPayment:', error);
             res.status(500).json({
                 success: false,
-                message: "Error verifying payment",
-                error: error.message
+                message: error.message
             });
         }
     },
@@ -213,8 +246,8 @@ RentEase Team`
                 ? { tenant: userId }
                 : { landlord: userId };
 
-            const payments = await Payment.find(query)
-                .populate('tenant landlord property')
+            const payments = await BookProperty.find(query)
+                .populate('property tenant')
                 .sort({ createdAt: -1 });
 
             res.json({
@@ -224,8 +257,7 @@ RentEase Team`
         } catch (error) {
             res.status(500).json({
                 success: false,
-                message: "Error fetching payment history",
-                error: error.message
+                message: error.message
             });
         }
     },
@@ -254,6 +286,197 @@ RentEase Team`
                 message: "Error fetching payment details",
                 error: error.message
             });
+        }
+    },
+
+    // Setup automatic payments
+    setupAutomaticPayments: async (req, res) => {
+        try {
+            const { leaseId, paymentDay } = req.body;
+            const lease = await Lease.findById(leaseId);
+            
+            if (!lease) {
+                return res.status(404).json({ message: 'Lease not found' });
+            }
+
+            lease.automaticPayments = true;
+            lease.paymentDay = paymentDay;
+            await lease.save();
+
+            // Create notification
+            const notification = new Notification({
+                userId: lease.tenantId,
+                userType: 'Tenant',
+                type: 'payment',
+                title: 'Automatic Payments Setup',
+                message: 'Automatic payments have been set up for your lease',
+                relatedId: lease._id
+            });
+            await notification.save();
+
+            res.json(lease);
+        } catch (error) {
+            res.status(400).json({ message: error.message });
+        }
+    },
+
+    // Get upcoming payments
+    getUpcomingPayments: async (req, res) => {
+        try {
+            const userId = req.user._id;
+            const userType = req.user.userType.toLowerCase();
+            
+            const query = userType === 'tenant' ? { tenantId: userId } : { landlordId: userId };
+            const leases = await Lease.find(query);
+            
+            const leaseIds = leases.map(lease => lease._id);
+            const upcomingPayments = await Payment.find({
+                leaseId: { $in: leaseIds },
+                status: 'pending',
+                dueDate: { $gte: new Date() }
+            }).sort({ dueDate: 1 });
+            
+            res.json(upcomingPayments);
+        } catch (error) {
+            res.status(500).json({ message: error.message });
+        }
+    },
+
+    // Split payment between multiple tenants
+    splitPayment: async (req, res) => {
+        try {
+            const { leaseId, totalAmount, totalTenants } = req.body;
+            const splitAmount = totalAmount / totalTenants;
+            
+            const payment = new Payment({
+                leaseId,
+                amount: totalAmount,
+                paymentType: 'rent',
+                paymentMethod: 'split',
+                status: 'pending',
+                splitPayment: {
+                    isSplit: true,
+                    totalTenants,
+                    splitAmount
+                }
+            });
+            
+            await payment.save();
+
+            // Create notifications for all tenants
+            const lease = await Lease.findById(leaseId);
+            const notifications = Array(totalTenants).fill().map(() => new Notification({
+                userId: lease.tenantId,
+                userType: 'Tenant',
+                type: 'payment',
+                title: 'Split Payment Created',
+                message: `A split payment of $${splitAmount} has been created for your lease`,
+                relatedId: payment._id
+            }));
+
+            await Notification.insertMany(notifications);
+
+            res.json(payment);
+        } catch (error) {
+            res.status(400).json({ message: error.message });
+        }
+    },
+
+    // Get utility payment history
+    getUtilityPayments: async (req, res) => {
+        try {
+            const userId = req.user._id;
+            const userType = req.user.userType.toLowerCase();
+            
+            const query = userType === 'tenant' ? { tenantId: userId } : { landlordId: userId };
+            const leases = await Lease.find(query);
+            
+            const leaseIds = leases.map(lease => lease._id);
+            const utilityPayments = await Payment.find({
+                leaseId: { $in: leaseIds },
+                paymentType: 'utility'
+            }).sort({ paymentDate: -1 });
+            
+            res.json(utilityPayments);
+        } catch (error) {
+            res.status(500).json({ message: error.message });
+        }
+    },
+
+    // Make utility payment
+    makeUtilityPayment: async (req, res) => {
+        try {
+            const { leaseId, amount, utilityType, period } = req.body;
+            
+            const payment = new Payment({
+                leaseId,
+                amount,
+                paymentType: 'utility',
+                paymentMethod: 'bank_transfer',
+                status: 'completed',
+                utilityDetails: {
+                    type: utilityType,
+                    period
+                }
+            });
+            
+            await payment.save();
+
+            // Create notification
+            const lease = await Lease.findById(leaseId);
+            const notification = new Notification({
+                userId: lease.landlordId,
+                userType: 'Landlord',
+                type: 'payment',
+                title: 'Utility Payment Received',
+                message: `A utility payment of $${amount} has been received`,
+                relatedId: payment._id
+            });
+            await notification.save();
+
+            res.json(payment);
+        } catch (error) {
+            res.status(400).json({ message: error.message });
+        }
+    },
+
+    // Generate payment reports
+    getPaymentReports: async (req, res) => {
+        try {
+            const userId = req.user._id;
+            const userType = req.user.userType.toLowerCase();
+            const { startDate, endDate } = req.query;
+            
+            const query = userType === 'tenant' ? { tenantId: userId } : { landlordId: userId };
+            const leases = await Lease.find(query);
+            
+            const leaseIds = leases.map(lease => lease._id);
+            const dateQuery = {
+                paymentDate: {
+                    $gte: new Date(startDate),
+                    $lte: new Date(endDate)
+                }
+            };
+            
+            const payments = await Payment.find({
+                leaseId: { $in: leaseIds },
+                ...dateQuery
+            }).sort({ paymentDate: 1 });
+            
+            // Generate report summary
+            const report = {
+                totalPayments: payments.length,
+                totalAmount: payments.reduce((sum, payment) => sum + payment.amount, 0),
+                byType: payments.reduce((acc, payment) => {
+                    acc[payment.paymentType] = (acc[payment.paymentType] || 0) + payment.amount;
+                    return acc;
+                }, {}),
+                payments
+            };
+            
+            res.json(report);
+        } catch (error) {
+            res.status(500).json({ message: error.message });
         }
     }
 };

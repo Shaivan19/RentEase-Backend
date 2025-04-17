@@ -32,8 +32,8 @@ const bookPropertySchema = new mongoose.Schema(
     }, // Store old time when rescheduled
     status: { 
       type: String, 
-      enum: ["booked", "completed", "cancelled"], 
-      default: "booked" 
+      enum: ["pending", "booked", "completed", "cancelled"], 
+      default: "pending" 
     },
     message: { 
       type: String, 
