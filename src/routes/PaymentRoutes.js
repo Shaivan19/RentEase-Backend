@@ -30,4 +30,7 @@ router.post('/payments/verify', verifyToken, (req, res) => PaymentController.ver
 // Get payment history
 router.get('/history/:userId/:userType', verifyToken, (req, res) => PaymentController.getPaymentHistory(req, res));
 
-module.exports = router;
+// Get landlord earnings
+router.get('/payments/landlord-earnings', verifyToken, PaymentController.getLandlordEarnings);
+
+module.exports = router; 

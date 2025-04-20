@@ -28,11 +28,8 @@ const PaymentController = {
                 });
             }
 
-            // For testing purposes, ensure amount is reasonable
-            const testAmount = Math.min(amount, 10000); // Max 100 INR for testing
-
             const options = {
-                amount: testAmount, // Using test amount
+                amount: amount, // Using actual amount
                 currency: "INR",
                 receipt: `receipt_${Date.now()}`,
                 notes: {
@@ -56,12 +53,12 @@ const PaymentController = {
                 propertyId,
                 startDate: new Date(leaseTerms.startDate),
                 endDate: new Date(leaseTerms.endDate),
-                rentAmount: leaseTerms.rentAmount || testAmount / 100,
-                securityDeposit: leaseTerms.securityDeposit || testAmount / 100,
+                rentAmount: leaseTerms.rentAmount,
+                securityDeposit: leaseTerms.securityDeposit,
                 status: 'pending',
                 terms: {
-                    rentAmount: leaseTerms.rentAmount || testAmount / 100,
-                    securityDeposit: leaseTerms.securityDeposit || testAmount / 100,
+                    rentAmount: leaseTerms.rentAmount,
+                    securityDeposit: leaseTerms.securityDeposit,
                     duration: leaseTerms.duration || '12 months',
                     rentDueDate: leaseTerms.rentDueDate || 1,
                     maintenance: leaseTerms.maintenance || 'Tenant responsible',
@@ -79,7 +76,7 @@ const PaymentController = {
                 landlord: landlordId,
                 property: propertyId,
                 lease: lease._id,
-                amount: testAmount / 100,
+                amount: amount / 100, // Convert paise to rupees
                 paymentType: 'rent',
                 paymentMethod: 'razorpay',
                 paymentDate: new Date(),
@@ -100,10 +97,10 @@ const PaymentController = {
                 "Payment Initiated - RentEase",
                 `Dear ${populatedPayment.tenant.username},
 
-Your payment of ₹${testAmount / 100} has been initiated for ${populatedPayment.property.name}.
+Your payment of ₹${amount / 100} has been initiated for ${populatedPayment.property.name}.
 Payment Details:
 - Order ID: ${order.id}
-- Amount: ₹${testAmount / 100}
+- Amount: ₹${amount / 100}
 - Type: ${paymentType}
 - Due Date: ${payment.dueDate}
 
@@ -477,6 +474,61 @@ RentEase Team`
             res.json(report);
         } catch (error) {
             res.status(500).json({ message: error.message });
+        }
+    },
+
+    // Get monthly earnings for landlord dashboard
+    getLandlordEarnings: async (req, res) => {
+        try {
+            const landlordId = req.user._id;
+            const currentYear = new Date().getFullYear();
+            
+            // Get all completed payments for the landlord
+            const payments = await Payment.find({
+                landlord: landlordId,
+                status: 'completed',
+                paymentDate: {
+                    $gte: new Date(currentYear, 0, 1), // Start of current year
+                    $lte: new Date(currentYear, 11, 31) // End of current year
+                }
+            });
+
+            // Initialize monthly data
+            const monthlyData = Array.from({ length: 12 }, (_, index) => ({
+                month: new Date(currentYear, index).toLocaleString('default', { month: 'short' }),
+                earnings: 0,
+                target: 0
+            }));
+
+            // Calculate target based on all active properties
+            const properties = await Property.find({
+                owner: landlordId,
+                status: 'Occupied'
+            });
+            const monthlyTarget = properties.reduce((sum, property) => sum + (property.price || 0), 0);
+
+            // Set target for each month
+            monthlyData.forEach(data => {
+                data.target = monthlyTarget;
+            });
+
+            // Calculate actual earnings
+            payments.forEach(payment => {
+                const month = payment.paymentDate.getMonth();
+                monthlyData[month].earnings += payment.amount;
+            });
+
+            res.json({
+                success: true,
+                monthlyEarnings: monthlyData
+            });
+        } catch (error) {
+            console.error('Error fetching landlord earnings:', error);
+            res.status(500).json({
+                success: false,
+                message: 'Error fetching earnings data',
+                error: error.message
+            });
         }
     }
 };
