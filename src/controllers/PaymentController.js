@@ -175,16 +175,43 @@ RentEase Team`
                     landlord: payment.landlordId,
                     property: payment.propertyId,
                     status: 'booked',
-                    bookingDate: new Date()
+                    bookingDate: new Date(),
+                    startDate: payment.leaseTerms?.startDate || new Date(),
+                    endDate: payment.leaseTerms?.endDate || new Date(Date.now() + 365 * 24 * 60 * 60 * 1000), // Default 1 year
+                    leaseTerms: {
+                        rentAmount: payment.amount,
+                        securityDeposit: payment.amount,
+                        duration: payment.leaseTerms?.duration || '12 months',
+                        rentDueDate: payment.leaseTerms?.rentDueDate || 1,
+                        maintenance: payment.leaseTerms?.maintenance || 'Tenant responsible',
+                        utilities: payment.leaseTerms?.utilities || 'Tenant responsible',
+                        noticePeriod: payment.leaseTerms?.noticePeriod || '1 month',
+                        renewalTerms: payment.leaseTerms?.renewalTerms || 'Automatic renewal unless notice given',
+                        terminationClause: payment.leaseTerms?.terminationClause || 'Standard termination terms apply'
+                    },
+                    paymentStatus: 'completed',
+                    paymentDetails: {
+                        orderId: razorpay_order_id,
+                        paymentId: razorpay_payment_id,
+                        signature: razorpay_signature,
+                        date: new Date(),
+                        amount: payment.amount
+                    }
                 });
 
                 await booking.save();
+
+                // Populate the booking with property and tenant details
+                const populatedBooking = await BookProperty.findById(booking._id)
+                    .populate('property', 'title location price')
+                    .populate('tenant', 'name email')
+                    .populate('landlord', 'name email');
 
                 res.json({
                     success: true,
                     message: 'Payment verified successfully',
                     payment,
-                    booking
+                    booking: populatedBooking
                 });
             } else {
                 res.status(400).json({
@@ -480,53 +507,121 @@ RentEase Team`
     // Get monthly earnings for landlord dashboard
     getLandlordEarnings: async (req, res) => {
         try {
-            const landlordId = req.user._id;
-            const currentYear = new Date().getFullYear();
+            // Get landlord ID from the authenticated user
+            const landlordId = req.user?._id;
+            
+            if (!landlordId) {
+                console.error('No landlord ID found in request');
+                return res.status(401).json({
+                    success: false,
+                    message: 'Unauthorized: No landlord ID found'
+                });
+            }
+
+            console.log('Fetching earnings for landlord:', landlordId);
             
             // Get all completed payments for the landlord
             const payments = await Payment.find({
                 landlord: landlordId,
-                status: 'completed',
-                paymentDate: {
-                    $gte: new Date(currentYear, 0, 1), // Start of current year
-                    $lte: new Date(currentYear, 11, 31) // End of current year
-                }
-            });
+                status: 'completed'
+            }).populate('property');
 
-            // Initialize monthly data
-            const monthlyData = Array.from({ length: 12 }, (_, index) => ({
-                month: new Date(currentYear, index).toLocaleString('default', { month: 'short' }),
-                earnings: 0,
-                target: 0
-            }));
+            console.log('Found payments:', payments);
+
+            // Initialize monthly data with all months
+            const monthlyData = Array.from({ length: 12 }, (_, index) => {
+                const date = new Date(new Date().getFullYear(), index);
+                return {
+                    month: date.toLocaleString('default', { month: 'short' }),
+                    earnings: 0,
+                    target: 0
+                };
+            });
 
             // Calculate target based on all active properties
             const properties = await Property.find({
                 owner: landlordId,
-                status: 'Occupied'
+                status: { $in: ['Occupied', 'Unavailable'] }
             });
-            const monthlyTarget = properties.reduce((sum, property) => sum + (property.price || 0), 0);
+            
+            console.log('Found properties:', properties);
+            
+            // Calculate monthly target from property rents
+            const monthlyTarget = properties.reduce((sum, property) => {
+                return sum + (property.rent || 0);
+            }, 0);
 
             // Set target for each month
             monthlyData.forEach(data => {
                 data.target = monthlyTarget;
             });
 
-            // Calculate actual earnings
+            // Calculate actual earnings from payments
             payments.forEach(payment => {
                 const month = payment.paymentDate.getMonth();
                 monthlyData[month].earnings += payment.amount;
             });
 
+            // Calculate total earnings
+            const totalEarnings = payments.reduce((sum, payment) => sum + payment.amount, 0);
+
+            console.log('Calculated monthly data:', monthlyData);
+            console.log('Total earnings:', totalEarnings);
+            console.log('Monthly target:', monthlyTarget);
+
             res.json({
                 success: true,
-                monthlyEarnings: monthlyData
+                monthlyEarnings: monthlyData,
+                totalEarnings: totalEarnings
             });
         } catch (error) {
             console.error('Error fetching landlord earnings:', error);
             res.status(500).json({
                 success: false,
                 message: 'Error fetching earnings data',
+                error: error.message
+            });
+        }
+    },
+
+    // Check for new payments since last check
+    checkNewPayments: async (req, res) => {
+        try {
+            const { lastCheck } = req.query;
+            const landlordId = req.user._id;
+
+            if (!lastCheck) {
+                return res.status(400).json({
+                    success: false,
+                    message: "Last check timestamp is required"
+                });
+            }
+
+            const newPayments = await Payment.find({
+                landlord: landlordId,
+                status: 'completed',
+                paymentDate: { $gt: new Date(lastCheck) }
+            }).populate('property tenant');
+
+            // Transform the payments data
+            const transformedPayments = newPayments.map(payment => ({
+                amount: payment.amount,
+                propertyId: payment.property._id,
+                landlordId: payment.landlord,
+                timestamp: payment.paymentDate,
+                propertyName: payment.property.name,
+                tenantName: payment.tenant.username
+            }));
+
+            res.json({
+                success: true,
+                newPayments: transformedPayments
+            });
+        } catch (error) {
+            console.error('Error checking new payments:', error);
+            res.status(500).json({
+                success: false,
+                message: 'Error checking for new payments',
                 error: error.message
             });
         }

@@ -2,23 +2,17 @@ const Maintenance = require('../models/MaintenanceModel');
 const Property = require('../models/PropertyModel');
 const multer = require('multer');
 const path = require('path');
-const fs = require('fs').promises;
-const nodemailer = require('nodemailer');
+const { uploadFileToCloudinary } = require('../utils/CloudinaryUtil');
+const { sendEmail } = require('../utils/MailUtil');
 const Notification = require('../models/NotificationModel');
 const { verifyToken } = require('../middleware/authMiddleware');
 
-// Configure multer for file upload
+// Configure multer for temporary file storage before Cloudinary upload
 const storage = multer.diskStorage({
-    destination: async (req, file, cb) => {
-        const dir = 'uploads/maintenance';
-        try {
-            await fs.mkdir(dir, { recursive: true });
-            cb(null, dir);
-        } catch (error) {
-            cb(error, dir);
-        }
+    destination: function (req, file, cb) {
+        cb(null, 'temp/');
     },
-    filename: (req, file, cb) => {
+    filename: function (req, file, cb) {
         const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
         cb(null, uniqueSuffix + path.extname(file.originalname));
     }
@@ -36,54 +30,109 @@ const upload = multer({
         }
         cb(new Error('Only images are allowed!'));
     }
-}).array('images', 5); // Allow up to 5 images
+}).array('images', 5);
 
 const MaintenanceController = {
     // Create new maintenance request
     createRequest: async (req, res) => {
         try {
-            upload(req, res, async (err) => {
-                if (err) {
-                    return res.status(400).json({
+            console.log('Received maintenance request:', req.body);
+            console.log('Files:', req.files);
+            console.log('User:', req.user);
+            
+            const { propertyId, title, description, priority } = req.body;
+            
+            if (!propertyId || !title || !description) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'Missing required fields: propertyId, title, and description are required'
+                });
+            }
+
+            // Get property details to get landlord info
+            const property = await Property.findById(propertyId);
+            if (!property) {
+                return res.status(404).json({
+                    success: false,
+                    message: 'Property not found'
+                });
+            }
+
+            // Upload images to Cloudinary
+            let images = [];
+            if (req.files && req.files.length > 0) {
+                try {
+                    const uploadPromises = req.files.map(async (file) => {
+                        const result = await uploadFileToCloudinary(file);
+                        return {
+                            url: result.secure_url,
+                            description: file.originalname
+                        };
+                    });
+                    images = await Promise.all(uploadPromises);
+                } catch (uploadError) {
+                    console.error('Error uploading images:', uploadError);
+                    return res.status(500).json({
                         success: false,
-                        message: err.message
+                        message: 'Error uploading images',
+                        error: uploadError.message
                     });
                 }
+            }
 
-                const { propertyId, title, description, priority } = req.body;
+            // Create maintenance request
+            const maintenanceRequest = new Maintenance({
+                propertyId,
+                tenantId: req.user._id,
+                landlordId: property.owner,
+                title,
+                description,
+                priority: priority || 'medium',
+                images,
+                status: 'pending'
+            });
 
-                // Get property details to get landlord info
-                const property = await Property.findById(propertyId);
-                if (!property) {
-                    return res.status(404).json({
-                        success: false,
-                        message: 'Property not found'
-                    });
-                }
+            await maintenanceRequest.save();
 
-                // Create maintenance request
-                const maintenanceRequest = new Maintenance({
-                    property: propertyId,
-                    tenant: req.user.id,
-                    landlord: property.landlord,
-                    title,
-                    description,
-                    priority,
-                    images: req.files ? req.files.map(file => file.path) : []
-                });
+            // Create notification for landlord
+            const notification = new Notification({
+                userId: property.owner,
+                userType: 'Landlord',
+                type: 'maintenance',
+                title: 'New Maintenance Request',
+                message: `New maintenance request from tenant: ${title}`,
+                relatedId: maintenanceRequest._id
+            });
+            await notification.save();
 
-                await maintenanceRequest.save();
+            // Send email to tenant
+            const emailSubject = 'Maintenance Request Filed Successfully';
+            const emailText = `
+                Maintenance Request Confirmation
+                
+                Your maintenance request has been filed successfully.
+                
+                Title: ${title}
+                Description: ${description}
+                Priority: ${priority || 'medium'}
+                
+                We will notify you once the landlord reviews your request.
+            `;
 
-                // Send email notifications
-                // TODO: Implement email notification system
+            try {
+                await sendEmail(req.user.email, emailSubject, emailText);
+            } catch (emailError) {
+                console.error('Error sending email:', emailError);
+                // Don't fail the request if email fails
+            }
 
-                res.status(201).json({
-                    success: true,
-                    message: 'Maintenance request created successfully',
-                    data: maintenanceRequest
-                });
+            res.status(201).json({
+                success: true,
+                message: 'Maintenance request created successfully',
+                data: maintenanceRequest
             });
         } catch (error) {
+            console.error('Error in createRequest:', error);
             res.status(500).json({
                 success: false,
                 message: 'Error creating maintenance request',
@@ -96,16 +145,20 @@ const MaintenanceController = {
     getPropertyRequests: async (req, res) => {
         try {
             const { propertyId } = req.params;
-            const requests = await Maintenance.find({ property: propertyId })
-                .populate('tenant', 'username email')
-                .populate('landlord', 'username email')
+            const requests = await Maintenance.find({ propertyId })
+                .populate('propertyId', 'name title address')
+                .populate('tenantId', 'username email')
+                .populate('landlordId', 'username email')
                 .sort({ createdAt: -1 });
+
+            console.log('Fetched maintenance requests:', requests); // Debug log
 
             res.json({
                 success: true,
                 data: requests
             });
         } catch (error) {
+            console.error('Error in getPropertyRequests:', error);
             res.status(500).json({
                 success: false,
                 message: 'Error fetching maintenance requests',
@@ -117,9 +170,9 @@ const MaintenanceController = {
     // Get all maintenance requests for a tenant
     getTenantRequests: async (req, res) => {
         try {
-            const requests = await Maintenance.find({ tenant: req.user.id })
-                .populate('property', 'name address')
-                .populate('landlord', 'username email')
+            const requests = await Maintenance.find({ tenantId: req.user.id })
+                .populate('propertyId', 'name address')
+                .populate('landlordId', 'username email')
                 .sort({ createdAt: -1 });
 
             res.json({
@@ -138,16 +191,28 @@ const MaintenanceController = {
     // Get all maintenance requests for a landlord
     getLandlordRequests: async (req, res) => {
         try {
-            const requests = await Maintenance.find({ landlord: req.user.id })
-                .populate('property', 'name address')
-                .populate('tenant', 'username email')
-                .sort({ createdAt: -1 });
+            console.log('Landlord user:', req.user); // Debug log
+            const landlordId = req.user._id || req.user.id;
+            console.log('Using landlordId:', landlordId); // Debug log
+
+            const requests = await Maintenance.find({
+                $or: [
+                    { landlordId: landlordId },
+                    { landlordId: landlordId.toString() }
+                ]
+            })
+            .populate('propertyId', 'name title address')
+            .populate('tenantId', 'username email')
+            .sort({ createdAt: -1 });
+
+            console.log('Found maintenance requests:', JSON.stringify(requests, null, 2)); // Debug log with full details
 
             res.json({
                 success: true,
                 data: requests
             });
         } catch (error) {
+            console.error('Error in getLandlordRequests:', error);
             res.status(500).json({
                 success: false,
                 message: 'Error fetching maintenance requests',
@@ -160,45 +225,48 @@ const MaintenanceController = {
     updateStatus: async (req, res) => {
         try {
             const { requestId } = req.params;
-            const { status, comment, estimatedCost, scheduledDate } = req.body;
+            const { status, comment } = req.body;
 
-            const request = await Maintenance.findById(requestId);
-            if (!request) {
+            const maintenance = await Maintenance.findById(requestId);
+            if (!maintenance) {
                 return res.status(404).json({
                     success: false,
                     message: 'Maintenance request not found'
                 });
             }
 
-            // Update request
-            request.status = status;
-            if (estimatedCost) request.estimatedCost = estimatedCost;
-            if (scheduledDate) request.scheduledDate = scheduledDate;
-            if (status === 'COMPLETED') request.completionDate = new Date();
-
-            // Add comment if provided
+            maintenance.status = status;
             if (comment) {
-                request.comments.push({
-                    user: req.user.id,
-                    userType: req.user.userType,
-                    text: comment
+                maintenance.comments.push({
+                    userId: req.user.id,
+                    userType: 'Landlord',
+                    comment,
+                    timestamp: new Date()
                 });
             }
 
-            await request.save();
+            await maintenance.save();
 
-            // Send email notification about status update
-            // TODO: Implement email notification system
+            // Create notification for tenant
+            const notification = new Notification({
+                userId: maintenance.tenantId,
+                userType: 'Tenant',
+                type: 'maintenance',
+                title: 'Maintenance Status Updated',
+                message: `Your maintenance request status has been updated to: ${status}`,
+                relatedId: maintenance._id
+            });
+            await notification.save();
 
             res.json({
                 success: true,
-                message: 'Maintenance request updated successfully',
-                data: request
+                message: 'Maintenance request status updated successfully',
+                data: maintenance
             });
         } catch (error) {
             res.status(500).json({
                 success: false,
-                message: 'Error updating maintenance request',
+                message: 'Error updating maintenance request status',
                 error: error.message
             });
         }
@@ -208,28 +276,29 @@ const MaintenanceController = {
     addComment: async (req, res) => {
         try {
             const { requestId } = req.params;
-            const { text } = req.body;
+            const { comment } = req.body;
 
-            const request = await Maintenance.findById(requestId);
-            if (!request) {
+            const maintenance = await Maintenance.findById(requestId);
+            if (!maintenance) {
                 return res.status(404).json({
                     success: false,
                     message: 'Maintenance request not found'
                 });
             }
 
-            request.comments.push({
-                user: req.user.id,
+            maintenance.comments.push({
+                userId: req.user.id,
                 userType: req.user.userType,
-                text
+                comment,
+                timestamp: new Date()
             });
 
-            await request.save();
+            await maintenance.save();
 
             res.json({
                 success: true,
                 message: 'Comment added successfully',
-                data: request
+                data: maintenance
             });
         } catch (error) {
             res.status(500).json({
@@ -244,12 +313,12 @@ const MaintenanceController = {
     getRequestDetails: async (req, res) => {
         try {
             const { requestId } = req.params;
-            const request = await Maintenance.findById(requestId)
-                .populate('property', 'name address')
-                .populate('tenant', 'username email')
-                .populate('landlord', 'username email');
+            const maintenance = await Maintenance.findById(requestId)
+                .populate('propertyId', 'name address')
+                .populate('tenantId', 'username email')
+                .populate('landlordId', 'username email');
 
-            if (!request) {
+            if (!maintenance) {
                 return res.status(404).json({
                     success: false,
                     message: 'Maintenance request not found'
@@ -258,7 +327,7 @@ const MaintenanceController = {
 
             res.json({
                 success: true,
-                data: request
+                data: maintenance
             });
         } catch (error) {
             res.status(500).json({
@@ -403,6 +472,206 @@ const MaintenanceController = {
             res.json(maintenance);
         } catch (error) {
             res.status(400).json({ message: error.message });
+        }
+    },
+
+    // Get all maintenance requests (Admin only)
+    getAllRequests: async (req, res) => {
+        try {
+            const requests = await Maintenance.find()
+                .populate('propertyId', 'name address')
+                .populate('tenantId', 'username email')
+                .populate('landlordId', 'username email')
+                .sort({ createdAt: -1 });
+
+            res.json({
+                success: true,
+                data: requests
+            });
+        } catch (error) {
+            res.status(500).json({
+                success: false,
+                message: 'Error fetching maintenance requests',
+                error: error.message
+            });
+        }
+    },
+
+    // Update maintenance request (Tenant only)
+    updateRequest: async (req, res) => {
+        try {
+            const { requestId } = req.params;
+            const { title, description, priority } = req.body;
+            
+            // Find the maintenance request
+            const maintenance = await Maintenance.findById(requestId);
+            
+            if (!maintenance) {
+                return res.status(404).json({
+                    success: false,
+                    message: 'Maintenance request not found'
+                });
+            }
+
+            // Check if the request belongs to the tenant
+            if (maintenance.tenantId.toString() !== req.user._id?.toString() && 
+                maintenance.tenantId.toString() !== req.user.id?.toString()) {
+                return res.status(403).json({
+                    success: false,
+                    message: 'You are not authorized to update this request'
+                });
+            }
+
+            // Check if the request can be updated (only pending requests can be updated)
+            if (maintenance.status !== 'pending') {
+                return res.status(400).json({
+                    success: false,
+                    message: 'Only pending requests can be updated'
+                });
+            }
+
+            // Upload new images if provided
+            let newImages = [];
+            if (req.files && req.files.length > 0) {
+                const uploadPromises = req.files.map(async (file) => {
+                    const result = await uploadFileToCloudinary(file);
+                    return {
+                        url: result.secure_url,
+                        description: file.originalname
+                    };
+                });
+                newImages = await Promise.all(uploadPromises);
+            }
+
+            // Update the maintenance request
+            const updatedFields = {};
+            if (title) updatedFields.title = title;
+            if (description) updatedFields.description = description;
+            if (priority) updatedFields.priority = priority;
+            if (newImages.length > 0) {
+                updatedFields.images = [...maintenance.images, ...newImages];
+            }
+
+            const updatedMaintenance = await Maintenance.findByIdAndUpdate(
+                requestId,
+                { $set: updatedFields },
+                { new: true }
+            ).populate('propertyId', 'name address')
+             .populate('tenantId', 'username email')
+             .populate('landlordId', 'username email');
+
+            // Create notification for landlord about the update
+            const notification = new Notification({
+                userId: maintenance.landlordId,
+                userType: 'Landlord',
+                type: 'maintenance',
+                title: 'Maintenance Request Updated',
+                message: `A maintenance request has been updated by the tenant: ${title || maintenance.title}`,
+                relatedId: maintenance._id
+            });
+            await notification.save();
+
+            // Send email to tenant about the update
+            const emailSubject = 'Maintenance Request Updated';
+            const emailText = `
+                Maintenance Request Update Confirmation
+                
+                Your maintenance request has been updated successfully.
+                
+                Title: ${title || maintenance.title}
+                Description: ${description || maintenance.description}
+                Priority: ${priority || maintenance.priority}
+                
+                We will notify you once the landlord reviews your updated request.
+            `;
+
+            await sendEmail(req.user.email, emailSubject, emailText);
+
+            res.json({
+                success: true,
+                message: 'Maintenance request updated successfully',
+                data: updatedMaintenance
+            });
+        } catch (error) {
+            res.status(500).json({
+                success: false,
+                message: 'Error updating maintenance request',
+                error: error.message
+            });
+        }
+    },
+
+    // Delete maintenance request (Tenant only)
+    deleteRequest: async (req, res) => {
+        try {
+            const { requestId } = req.params;
+            
+            // Find the maintenance request
+            const maintenance = await Maintenance.findById(requestId);
+            
+            if (!maintenance) {
+                return res.status(404).json({
+                    success: false,
+                    message: 'Maintenance request not found'
+                });
+            }
+
+            // Check if the request belongs to the tenant
+            if (maintenance.tenantId.toString() !== req.user.id) {
+                return res.status(403).json({
+                    success: false,
+                    message: 'You are not authorized to delete this request'
+                });
+            }
+
+            // Check if the request can be deleted (only pending requests can be deleted)
+            if (maintenance.status !== 'pending') {
+                return res.status(400).json({
+                    success: false,
+                    message: 'Only pending requests can be deleted'
+                });
+            }
+
+            // Delete the maintenance request
+            await Maintenance.findByIdAndDelete(requestId);
+
+            // Create notification for landlord about the deletion
+            const notification = new Notification({
+                userId: maintenance.landlordId,
+                userType: 'Landlord',
+                type: 'maintenance',
+                title: 'Maintenance Request Deleted',
+                message: `A maintenance request has been deleted by the tenant: ${maintenance.title}`,
+                relatedId: maintenance._id
+            });
+            await notification.save();
+
+            // Send email to tenant about the deletion
+            const emailSubject = 'Maintenance Request Deleted';
+            const emailText = `
+                Maintenance Request Deletion Confirmation
+                
+                Your maintenance request has been deleted successfully.
+                
+                Title: ${maintenance.title}
+                Description: ${maintenance.description}
+                Priority: ${maintenance.priority}
+                
+                If you need to create a new maintenance request, please do so through the maintenance request form.
+            `;
+
+            await sendEmail(req.user.email, emailSubject, emailText);
+
+            res.json({
+                success: true,
+                message: 'Maintenance request deleted successfully'
+            });
+        } catch (error) {
+            res.status(500).json({
+                success: false,
+                message: 'Error deleting maintenance request',
+                error: error.message
+            });
         }
     }
 };

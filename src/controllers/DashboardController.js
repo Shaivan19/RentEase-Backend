@@ -95,25 +95,27 @@ const DashboardController = {
     //---get landlord dashboard----//
     getLandlordDashboard: async (req, res) => {
         try {
-            const landlordId = req.user.id;
-            console.log('Landlord ID:', landlordId); // Debug log
+            const landlordId = req.user._id || req.user.id;
+            console.log('Using landlord ID:', landlordId);
     
             // First, get the properties separately to check if this works
             const properties = await Property.find({ owner: landlordId });
-            console.log('Found properties:', properties.length); // Debug log
+            console.log('Found properties:', properties.length);
+            
+            if (properties.length === 0) {
+                const landlord = await Landlord.findById(landlordId);
+                console.log('Landlord exists:', !!landlord);
+            }
     
             const [
                 propertiesWithTenant,
                 upcomingVisits,
                 propertyBookings,
-                // recentPropertyViews commented out since it's not used
             ] = await Promise.all([
-                // Modified query to check if populate is the issue
                 Property.find({ owner: landlordId })
-                    .select('title address price images currentTenant')
-                    .lean(), // Using lean() for better performance
+                    .select('title address price images currentTenant status')
+                    .lean(),
     
-                // Get upcoming property visits
                 VisitProperty.find({ 
                     property: { 
                         $in: properties.map(p => p._id) 
@@ -125,7 +127,6 @@ const DashboardController = {
                 .populate('tenant', 'username email')
                 .populate('property', 'title address'),
     
-                // Get recent booking requests
                 Booking.find({
                     property: {
                         $in: properties.map(p => p._id)
@@ -137,8 +138,11 @@ const DashboardController = {
                 .populate('property', 'title address'),
             ]);
     
-            // Calculate occupancy rate
-            const occupiedProperties = propertiesWithTenant.filter(p => p.currentTenant).length;
+            // Calculate occupancy rate - consider both currentTenant and status
+            const occupiedProperties = propertiesWithTenant.filter(p => 
+                p.currentTenant || p.status === 'booked'
+            ).length;
+            
             const occupancyRate = properties.length > 0 
                 ? (occupiedProperties / properties.length) * 100 
                 : 0;
@@ -151,7 +155,8 @@ const DashboardController = {
                         name: property.title,
                         address: property.address,
                         rent: property.price,
-                        status: property.currentTenant ? 'Occupied' : 'Available',
+                        status: property.currentTenant ? 'Occupied' : 
+                               property.status === 'booked' ? 'Booked' : 'Available',
                         images: property.images?.[0] || null
                     })),
                     upcomingVisits: upcomingVisits.map(visit => ({
@@ -180,7 +185,7 @@ const DashboardController = {
                 }
             };
     
-            console.log('Sending response:', JSON.stringify(response, null, 2)); // Debug log
+            console.log('Sending response:', JSON.stringify(response, null, 2));
             res.json(response);
     
         } catch (error) {

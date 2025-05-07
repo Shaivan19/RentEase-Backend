@@ -1,4 +1,5 @@
 const Lease = require("../models/LeaseModel");
+const Property = require("../models/PropertyModel");
 const Notification = require("../models/NotificationModel");
 const { verifyToken } = require("../middleware/authMiddleware");
 
@@ -210,6 +211,85 @@ const LeaseController = {
             res.json(lease);
         } catch (error) {
             res.status(400).json({ message: error.message });
+        }
+    },
+
+    // Get lease details with property information
+    getLeaseWithPropertyDetails: async (req, res) => {
+        try {
+            const lease = await Lease.findById(req.params.id)
+                .populate({
+                    path: 'propertyId',
+                    select: 'title description price images address amenities features status owner',
+                    populate: {
+                        path: 'owner',
+                        select: 'username email phone'
+                    }
+                })
+                .populate('tenantId', 'username email phone')
+                .populate('landlordId', 'username email phone');
+
+            if (!lease) {
+                return res.status(404).json({ message: 'Lease not found' });
+            }
+
+            // Update property status to booked if it's available
+            if (lease.propertyId.status === 'Available') {
+                await Property.findByIdAndUpdate(lease.propertyId._id, {
+                    status: 'Booked'
+                });
+            }
+
+            res.json({
+                success: true,
+                lease: lease
+            });
+        } catch (error) {
+            res.status(500).json({ 
+                success: false,
+                message: error.message 
+            });
+        }
+    },
+
+    // Get all bookings for a tenant with property details
+    getAllBookingsForTenant: async (req, res) => {
+        try {
+            const userId = req.user._id; // Get user ID from the authenticated user
+
+            const bookings = await Lease.find({ tenantId: userId })
+                .populate({
+                    path: 'propertyId',
+                    select: 'title description price images address amenities features status owner',
+                    populate: {
+                        path: 'owner',
+                        select: 'username email phone'
+                    }
+                })
+                .populate('tenantId', 'username email phone')
+                .populate('landlordId', 'username email phone')
+                .sort({ createdAt: -1 }); // Sort by newest first
+
+            // Update property statuses to booked if they're available
+            await Promise.all(
+                bookings.map(async (booking) => {
+                    if (booking.propertyId && booking.propertyId.status === 'Available') {
+                        await Property.findByIdAndUpdate(booking.propertyId._id, {
+                            status: 'Booked'
+                        });
+                    }
+                })
+            );
+
+            res.json({
+                success: true,
+                bookings: bookings
+            });
+        } catch (error) {
+            res.status(500).json({ 
+                success: false,
+                message: error.message 
+            });
         }
     }
 };

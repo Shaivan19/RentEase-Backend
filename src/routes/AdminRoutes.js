@@ -13,16 +13,22 @@ router.get('/profile', adminAuth, adminController.getProfile);
 router.put('/profile', adminAuth, updateProfileValidation, adminController.updateProfile);
 router.put('/change-password', adminAuth, changePasswordValidation, adminController.changePassword);
 
-// New protected routes for admin dashboard
+// User management routes
 router.get('/users', adminAuth, adminController.getAllUsers);
-router.get('/properties', adminAuth, adminController.getAllProperties);
-router.get('/bookings', adminAuth, adminController.getAllBookings);
-router.get('/dashboard/stats', adminAuth, adminController.getDashboardStats);
+router.delete('/users/:type/:id', adminAuth, adminController.deleteUser);
 
-// Admin property management routes
+// Property management routes
+router.get('/properties', adminAuth, adminController.getAllProperties);
 router.put('/properties/:id', adminAuth, adminController.updateProperty);
 router.delete('/properties/:id', adminAuth, adminController.deleteProperty);
 router.put('/properties/:id/approve', adminAuth, adminController.approveProperty);
 router.put('/properties/:id/reject', adminAuth, adminController.rejectProperty);
+
+// Booking management routes
+router.get('/bookings', adminAuth, adminController.getAllBookings);
+router.put('/bookings/:id/confirm', adminAuth, adminController.confirmBooking);
+
+// Dashboard routes
+router.get('/dashboard/stats', adminAuth, adminController.getDashboardStats);
 
 module.exports = router;

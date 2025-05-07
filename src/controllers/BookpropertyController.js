@@ -4,6 +4,7 @@ const Tenant = require("../models/TenantModel");
 const Landlord = require("../models/LandlordModel");
 const MailUtil = require("../utils/MailUtil");
 const { generateLeaseDraft } = require('../utils/leaseGenerator');
+const Lease = require("../models/LeaseModel");
 
 
 // ✅ Book a Property
@@ -317,7 +318,11 @@ exports.verifyPaymentAndUpdateStatus = async (req, res) => {
         const { razorpay_order_id, razorpay_payment_id, razorpay_signature } = req.body;
 
         // Find the booking
-        const booking = await RentProperty.findById(bookingId);
+        const booking = await RentProperty.findById(bookingId)
+            .populate('property')
+            .populate('tenant')
+            .populate('landlord');
+            
         if (!booking) {
             return res.status(404).json({
                 success: false,
@@ -325,9 +330,35 @@ exports.verifyPaymentAndUpdateStatus = async (req, res) => {
             });
         }
 
-        // Update booking status
+        // Create a new lease
+        const lease = new Lease({
+            propertyId: booking.property._id,
+            landlordId: booking.landlord._id,
+            tenantId: booking.tenant._id,
+            startDate: booking.startDate,
+            endDate: booking.endDate,
+            rentAmount: booking.monthlyRent,
+            securityDeposit: booking.securityDeposit,
+            status: 'active',
+            terms: {
+                rentAmount: booking.monthlyRent,
+                securityDeposit: booking.securityDeposit,
+                duration: booking.leaseTerms.duration,
+                rentDueDate: booking.leaseTerms.rentDueDate,
+                maintenance: 'Tenant responsible',
+                utilities: 'Tenant responsible',
+                noticePeriod: '1 month',
+                renewalTerms: 'Automatic renewal unless notice given',
+                terminationClause: 'Standard termination terms apply'
+            }
+        });
+
+        await lease.save();
+
+        // Update booking status and link to lease
         booking.status = 'booked';
         booking.paymentStatus = 'completed';
+        booking.leaseId = lease._id; // Link booking to lease
         booking.paymentDetails = {
             orderId: razorpay_order_id,
             paymentId: razorpay_payment_id,
@@ -337,14 +368,15 @@ exports.verifyPaymentAndUpdateStatus = async (req, res) => {
         await booking.save();
 
         // Update property status
-        await Property.findByIdAndUpdate(booking.property, {
+        await Property.findByIdAndUpdate(booking.property._id, {
             status: 'booked'
         });
 
         res.json({
             success: true,
             message: 'Payment verified and status updated successfully',
-            booking
+            booking,
+            lease
         });
     } catch (error) {
         console.error('Error in verifyPaymentAndUpdateStatus:', error);

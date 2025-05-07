@@ -24,4 +24,8 @@ router.get("/leases/reminders", verifyToken, LeaseController.getLeaseReminders);
 // Terminate lease agreement
 router.post("/leases/:id/terminate", verifyToken, LeaseController.terminateLease);
 
+router.get("/lease/:id", verifyToken, LeaseController.getLeaseWithPropertyDetails);
+
+router.get("/bookings/tenant", verifyToken, isTenant, LeaseController.getAllBookingsForTenant);
+
 module.exports = router; 

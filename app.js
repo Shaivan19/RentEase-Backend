@@ -26,6 +26,7 @@ const bookpropertyRoutes = require("./src/routes/BookpropertyRoutes");
 
 const applicationRoutes = require("./src/routes/ApplicationRoutes");
 const leaseRoutes = require("./src/routes/LeaseRoutes");
+// const maintenanceRoutes = require("./src/routes/MaintenanceRoutes");
 const maintenanceRoutes = require("./src/routes/MaintenanceRoutes");
 const paymentRoutes = require("./src/routes/PaymentRoutes");
 const notificationRoutes = require("./src/routes/NotificationRoutes");
@@ -42,6 +43,7 @@ app.use(imageRoutes);
 app.use(bookpropertyRoutes);
 app.use(applicationRoutes);
 app.use(leaseRoutes);
+// app.use(maintenanceRoutes);
 app.use(maintenanceRoutes);
 app.use(paymentRoutes);
 app.use(notificationRoutes);
